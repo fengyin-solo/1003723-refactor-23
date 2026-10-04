@@ -3,11 +3,12 @@
     <header class="page-head">
       <div>
         <h2>流量监测管理</h2>
-        <p class="page-desc">维护流量记录，围绕记录编号、站点编号、测量方法、断面流量做登记、筛选与状态流转。</p>
+        <p class="page-desc">测量方法归一、断面流量/最大流速/过水面积补算与核对结论统一判定，动作、详情与整编链路共用同一套结论。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记流量记录</button>
         <button class="btn" type="button" @click="exportRows">导出流量监测清单</button>
+        <button class="btn" type="button" @click="exportChecklist">导出核对清单</button>
       </div>
     </header>
 
@@ -38,27 +39,27 @@
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
           <th>当前状态</th>
+          <th>核对结论</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
-          <td class="row-actions">
-            <button
-              v-for="action in actions"
-              :key="action"
-              class="link"
-              type="button"
-              @click="runAction(action, row)"
-            >
-              {{ action }}
-            </button>
+        <tr v-for="view in views" :key="String(view.row.id)" class="clickable-row" @click="openDetail(view.row.id)">
+          <td>{{ view.row.记录编号 }}</td>
+          <td>{{ view.row.站点编号 }}</td>
+          <td>{{ methodText(view.row) }}</td>
+          <td>{{ fieldText(view.row, '断面流量') }}</td>
+          <td>{{ fieldText(view.row, '最大流速') }}</td>
+          <td>{{ fieldText(view.row, '过水面积') }}</td>
+          <td>{{ view.row.测量时间 }}</td>
+          <td>{{ view.row.记录状态 }}</td>
+          <td><span class="tag" :class="view.evaluation.conclusion">{{ levelText(view.evaluation.conclusion) }}</span></td>
+          <td @click.stop>
+            <ReviewActionBar :actions="view.availableActions" :busy="busyId === Number(view.row.id)" @action="(action) => runAction(action, view.row)" />
           </td>
         </tr>
-        <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无流量监测数据，可先登记流量记录</td>
+        <tr v-if="!views.length">
+          <td :colspan="columns.length + 3" class="empty-state">暂无流量监测数据，可先登记流量记录</td>
         </tr>
       </tbody>
     </table>
@@ -72,32 +73,48 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
+import ReviewActionBar from '@/components/ReviewActionBar.vue'
+import { downloadEntries } from '@/api/local-service'
 import {
-  downloadEntries,
-  listEntries,
-  moduleMeta,
-  runAction as applyAction,
-} from '@/api/local-service'
+  downloadDischargeChecklist,
+  fieldText,
+  levelText,
+  listDischarge,
+  methodText,
+  transitionDischarge,
+} from '@/api/discharge-service'
 import type { EntryRow } from '@/data/types'
 
-const meta = moduleMeta('discharge')
-const columns = ["记录编号", "站点编号", "测量方法", "断面流量", "最大流速", "过水面积", "测量时间", "记录状态"]
-const actions = ["提交审核", "确认通过", "标记异常"]
-const statuses = ["已采集", "待审核", "已通过", "异常值"]
-const stats = [{"label": "今日测量次数", "value": 0}, {"label": "待审核记录", "value": 0}, {"label": "异常记录数", "value": 0}]
+const router = useRouter()
+const columns = ['记录编号', '站点编号', '测量方法', '断面流量', '最大流速', '过水面积', '测量时间', '记录状态']
+const filterFields = ['记录编号', '站点编号', '测量方法']
 
-const rows = ref<EntryRow[]>([])
-const total = ref(0)
+const views = ref(listDischarge())
+const total = computed(() => views.value.length)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const busyId = ref<number | null>(null)
+
 const statusSummary = computed(() =>
-  statuses.map((status: string) => ({
+  ['已采集', '待审核', '已通过', '异常值'].map((status) => ({
     status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
+    count: views.value.filter((view) => String(view.row.status) === status).length,
   })),
 )
+
+const stats = computed(() => [
+  { label: '今日测量次数', value: views.value.length },
+  {
+    label: '待审核记录',
+    value: views.value.filter((view) => String(view.row.status) === '待审核').length,
+  },
+  {
+    label: '核对不通过',
+    value: views.value.filter((view) => view.evaluation.conclusion === 'fail').length,
+  },
+])
 
 function resetFilters() {
   filters.value = {}
@@ -105,16 +122,26 @@ function resetFilters() {
 }
 
 function exportRows() {
-  downloadEntries(meta.key)
+  downloadEntries('discharge')
+}
+
+function exportChecklist() {
+  downloadDischargeChecklist()
 }
 
 function openCreate() {
   errorMessage.value = '流量记录登记入口尚未接入审批流'
 }
 
-function runAction(action: string, row: EntryRow) {
+function openDetail(id: number) {
+  void router.push({ name: 'discharge-detail', params: { id } })
+}
+
+async function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+  busyId.value = Number(row.id)
+  const result = await transitionDischarge(Number(row.id), action)
+  busyId.value = null
   if (!result.ok) {
     errorMessage.value = result.message
     return
@@ -124,13 +151,7 @@ function runAction(action: string, row: EntryRow) {
 
 function reload() {
   errorMessage.value = ''
-  try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '流量监测列表读取失败'
-  }
+  views.value = listDischarge(filters.value)
 }
 
 onMounted(reload)

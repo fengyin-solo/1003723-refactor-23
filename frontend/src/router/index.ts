@@ -4,11 +4,13 @@ import Dashboard from '@/views/Dashboard.vue'
 const Station = () => import('@/views/station/index.vue')
 const Waterlevel = () => import('@/views/waterlevel/index.vue')
 const Discharge = () => import('@/views/discharge/index.vue')
+const DischargeDetail = () => import('@/views/discharge/detail.vue')
 const Rainfall = () => import('@/views/rainfall/index.vue')
 const Waterquality = () => import('@/views/waterquality/index.vue')
 const Crosssection = () => import('@/views/crosssection/index.vue')
 const Telemetry = () => import('@/views/telemetry/index.vue')
 const Compilation = () => import('@/views/compilation/index.vue')
+const CompilationDetail = () => import('@/views/compilation/detail.vue')
 const Warning = () => import('@/views/warning/index.vue')
 const Groundwater = () => import('@/views/groundwater/index.vue')
 const Evaporation = () => import('@/views/evaporation/index.vue')
@@ -27,11 +29,13 @@ const router = createRouter({
     { path: '/station', name: 'station', component: Station },
     { path: '/waterlevel', name: 'waterlevel', component: Waterlevel },
     { path: '/discharge', name: 'discharge', component: Discharge },
+    { path: '/discharge/:id', name: 'discharge-detail', component: DischargeDetail },
     { path: '/rainfall', name: 'rainfall', component: Rainfall },
     { path: '/waterquality', name: 'waterquality', component: Waterquality },
     { path: '/crosssection', name: 'crosssection', component: Crosssection },
     { path: '/telemetry', name: 'telemetry', component: Telemetry },
     { path: '/compilation', name: 'compilation', component: Compilation },
+    { path: '/compilation/:id', name: 'compilation-detail', component: CompilationDetail },
     { path: '/warning', name: 'warning', component: Warning },
     { path: '/groundwater', name: 'groundwater', component: Groundwater },
     { path: '/evaporation', name: 'evaporation', component: Evaporation },

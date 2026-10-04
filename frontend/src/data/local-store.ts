@@ -1,8 +1,9 @@
 import { SEED_ROWS } from './seed'
 import type { EntryRow } from './types'
 
-// 本地持久化：数据放在 localStorage 里，刷新、关掉再打开都还在。
-const STORAGE_KEY = 'hydrology-monitor-station:entries'
+// 本地持久化：数据放在 localStorage 里，刷新、关掉再打开都在。
+// v2：流量监测接入统一核对与审核状态机，旧版播种数据结构不再沿用。
+const STORAGE_KEY = 'hydrology-monitor-station:entries:v2'
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -40,12 +41,26 @@ export function listRows(key: string): EntryRow[] {
   return allRows()[key] ?? []
 }
 
-export function saveRows(key: string, rows: EntryRow[]): void {
-  const next = { ...allRows(), [key]: rows }
-  cache = next
+function persist(next: Record<string, EntryRow[]>): void {
+  // 先序列化：序列化失败直接抛错，旧缓存和旧存储都保持原样，不会留下半份状态。
+  const payload = JSON.stringify(next)
   if (typeof window !== 'undefined' && window.localStorage) {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.localStorage.setItem(STORAGE_KEY, payload)
   }
+  cache = next
+}
+
+export function saveRows(key: string, rows: EntryRow[]): void {
+  persist({ ...allRows(), [key]: rows })
+}
+
+/**
+ * 跨模块原子提交：整编「提交审核」要同时落 整编成果状态、流量记录补算结果、核对清单快照，
+ * 必须整包成功才生效；任一步失败（如存储写满）全部不生效。
+ */
+export function commitRows(patches: Record<string, EntryRow[]>): void {
+  const next: Record<string, EntryRow[]> = { ...allRows(), ...clone(patches) }
+  persist(next)
 }
 
 export function resetRows(key: string): EntryRow[] {

@@ -3,11 +3,12 @@
     <header class="page-head">
       <div>
         <h2>数据整编管理</h2>
-        <p class="page-desc">维护整编成果，围绕成果编号、整编年份、站点编号、整编类型做登记、筛选与状态流转。</p>
+        <p class="page-desc">整编动作复用流量统一核对：提交审核时先跑核对清单，不通过直接拒绝；成果状态、补算回写、清单快照原子提交。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记整编成果</button>
         <button class="btn" type="button" @click="exportRows">导出数据整编清单</button>
+        <button class="btn" type="button" @click="exportMasterChecklist">导出整编核对清单</button>
       </div>
     </header>
 
@@ -38,27 +39,30 @@
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
           <th>当前状态</th>
+          <th>范围核对结论</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
-          <td class="row-actions">
-            <button
-              v-for="action in actions"
-              :key="action"
-              class="link"
-              type="button"
-              @click="runAction(action, row)"
-            >
-              {{ action }}
-            </button>
+        <tr v-for="view in views" :key="String(view.row.id)" class="clickable-row" @click="openDetail(Number(view.row.id))">
+          <td>{{ view.row.成果编号 }}</td>
+          <td>{{ view.row.整编年份 }}</td>
+          <td>{{ view.row.站点编号 }}</td>
+          <td>{{ view.row.整编类型 }}</td>
+          <td>{{ view.evaluations.length }}</td>
+          <td>{{ view.row.整编人 }}</td>
+          <td>{{ view.row.审核人 || '—' }}</td>
+          <td>{{ view.row.整编状态 }}</td>
+          <td>
+            <span v-for="tone in tonesOf(view)" :key="tone.level" class="tag" :class="tone.level">{{ tone.text }}</span>
+            <span v-if="!view.evaluations.length" class="tag fail">范围内无记录</span>
+          </td>
+          <td @click.stop>
+            <ReviewActionBar :actions="view.availableActions" :busy="busyId === Number(view.row.id)" @action="(action) => runAction(action, view.row)" />
           </td>
         </tr>
-        <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无数据整编数据，可先登记整编成果</td>
+        <tr v-if="!views.length">
+          <td :colspan="columns.length + 3" class="empty-state">暂无数据整编数据，可先登记整编成果</td>
         </tr>
       </tbody>
     </table>
@@ -72,32 +76,57 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
-import {
-  downloadEntries,
-  listEntries,
-  moduleMeta,
-  runAction as applyAction,
-} from '@/api/local-service'
+import ReviewActionBar from '@/components/ReviewActionBar.vue'
+import { downloadEntries } from '@/api/local-service'
+import { listCompilation, transitionCompilation } from '@/api/compilation-service'
+import { buildChecklist } from '@/domain/discharge/evaluate'
+import { checklistToCsv } from '@/domain/discharge/checklist-csv'
+import { listRows } from '@/data/local-store'
+import { downloadTextFile } from '@/api/download'
+import type { ConclusionLevel } from '@/domain/discharge/types'
+import type { CompilationRowView } from '@/api/compilation-service'
 import type { EntryRow } from '@/data/types'
 
-const meta = moduleMeta('compilation')
-const columns = ["成果编号", "整编年份", "站点编号", "整编类型", "原始记录数", "整编人", "审核人", "整编状态"]
-const actions = ["开始整编", "提交审核", "驳回整编"]
-const statuses = ["待整编", "整编中", "待审核", "已刊印", "已驳回"]
-const stats = [{"label": "待整编年度", "value": 0}, {"label": "整编中年度", "value": 0}, {"label": "已刊印成果", "value": 0}]
+const router = useRouter()
+const columns = ['成果编号', '整编年份', '站点编号', '整编类型', '原始记录数', '整编人', '审核人', '整编状态']
+const filterFields = ['成果编号', '整编年份', '站点编号']
 
-const rows = ref<EntryRow[]>([])
-const total = ref(0)
+const views = ref<CompilationRowView[]>([])
+const total = computed(() => views.value.length)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const busyId = ref<number | null>(null)
+
 const statusSummary = computed(() =>
-  statuses.map((status: string) => ({
+  ['待整编', '整编中', '待审核', '已刊印', '已驳回'].map((status) => ({
     status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
+    count: views.value.filter((view) => String(view.row.status) === status).length,
   })),
 )
+
+const stats = computed(() => [
+  { label: '整编成果', value: views.value.length },
+  {
+    label: '整编中',
+    value: views.value.filter((view) => String(view.row.status) === '整编中').length,
+  },
+  {
+    label: '范围有不通过项',
+    value: views.value.filter((view) => view.evaluations.some((item) => item.conclusion === 'fail')).length,
+  },
+])
+
+function tonesOf(view: CompilationRowView): { level: ConclusionLevel; text: string }[] {
+  const counts = { pass: 0, warning: 0, fail: 0 }
+  for (const item of view.evaluations) {
+    counts[item.conclusion] += 1
+  }
+  return (Object.entries(counts) as [ConclusionLevel, number][])
+    .filter(([, count]) => count > 0)
+    .map(([level, count]) => ({ level, text: `${level === 'pass' ? '通过' : level === 'warning' ? '预警' : '不通过'} ${count}` }))
+}
 
 function resetFilters() {
   filters.value = {}
@@ -105,16 +134,28 @@ function resetFilters() {
 }
 
 function exportRows() {
-  downloadEntries(meta.key)
+  downloadEntries('compilation')
+}
+
+/** 整编清单结论：不分成果，把全部流量记录按统一判定汇总一份。 */
+function exportMasterChecklist() {
+  const checklist = buildChecklist(listRows('discharge'), '数据整编·全部流量记录核对清单')
+  downloadTextFile(`数据整编-核对清单-${checklist.generatedAt.slice(0, 10)}.csv`, checklistToCsv(checklist))
 }
 
 function openCreate() {
   errorMessage.value = '整编成果登记入口尚未接入审批流'
 }
 
-function runAction(action: string, row: EntryRow) {
+function openDetail(id: number) {
+  void router.push({ name: 'compilation-detail', params: { id } })
+}
+
+async function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+  busyId.value = Number(row.id)
+  const result = await transitionCompilation(Number(row.id), action)
+  busyId.value = null
   if (!result.ok) {
     errorMessage.value = result.message
     return
@@ -124,13 +165,7 @@ function runAction(action: string, row: EntryRow) {
 
 function reload() {
   errorMessage.value = ''
-  try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '数据整编列表读取失败'
-  }
+  views.value = listCompilation(filters.value)
 }
 
 onMounted(reload)
