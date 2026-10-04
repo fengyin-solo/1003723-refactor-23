@@ -18,6 +18,9 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  // 动作允许的来源状态（状态机）：未声明的动作沿用旧规则（任意来源可执行），
+  // 声明后只能从列出的状态推进，用于拒绝越级动作。
+  actionFrom?: Record<string, string[]>
 }
 
 export type PageResult = {
